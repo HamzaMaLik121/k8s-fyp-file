@@ -1,0 +1,57 @@
+# ─────────────────────────────────────────────────────────────────────
+#  Frontend — Streamlit Dashboard
+#  Runs: streamlit run src/gui/dashboard.py
+#  Serves the web UI on port 8501
+#
+#  Build:
+#    docker build -f Dockerfile.dashboard -t tvs-dashboard .
+#  Run standalone (needs the shared database volume):
+#    docker run --rm -p 8501:8501 \
+#      -v "$(pwd)/database:/app/database" \
+#      -v "$(pwd)/outputs:/app/outputs" \
+#      tvs-dashboard
+# ─────────────────────────────────────────────────────────────────────
+
+FROM python:3.12-slim
+
+# ── minimal system deps for Streamlit + Pandas + Plotly ─────────────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+
+# Dashboard does NOT need PyTorch or CUDA, but requirements.txt includes them.
+# We install CPU torch to satisfy any transitive import, then the rest.
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir \
+        torch==2.3.1 torchvision==0.18.1 \
+        --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements.txt
+
+# ── project source ────────────────────────────────────────────────────
+COPY config/ ./config/
+COPY src/     ./src/
+
+# ── persistent directories (volumes supply the real data) ─────────────
+RUN mkdir -p database outputs/evidence
+
+# ── Streamlit server config ────────────────────────────────────────────
+# These env vars replace the need for a ~/.streamlit/config.toml
+ENV STREAMLIT_SERVER_PORT=8501
+ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
+ENV STREAMLIT_SERVER_HEADLESS=true
+ENV STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+EXPOSE 8501
+
+CMD ["streamlit", "run", "src/gui/dashboard.py", \
+     "--server.port=8501", \
+     "--server.address=0.0.0.0", \
+     "--server.headless=true"]
+

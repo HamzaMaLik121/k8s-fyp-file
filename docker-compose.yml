@@ -1,0 +1,95 @@
+# ─────────────────────────────────────────────────────────────────────
+#  Traffic Violation Detection System — Docker Compose
+#
+#  Two services share a single SQLite database file via a named volume:
+#    • backend   — CV/ML detection pipeline  (live_test.py)
+#    • dashboard — Streamlit web UI           (src/gui/dashboard.py)
+#
+#  Quick start:
+#    docker compose up --build
+#
+#  Dashboard only (to browse existing violations without running detection):
+#    docker compose up dashboard
+#
+#  Detection only (headless, no browser):
+#    docker compose up backend
+# ─────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Backend: Video Detection Pipeline ───────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: tvs-backend
+    restart: "no"            # run once per video, do not auto-restart
+
+    volumes:
+      # Persistent data shared with the dashboard
+      - db_data:/app/database
+      - evidence_data:/app/outputs
+
+      # Mount local model weights (large files, not baked into image)
+      - ./models:/app/models:ro
+
+      # Mount video input folder
+      - ./data:/app/data:ro
+
+      # Lane configuration (read-only; edit locally then rebuild)
+      - ./config/lane_config.json:/app/config/lane_config.json:ro
+
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Override video source via environment variable (optional)
+      # VIDEO_SOURCE: /app/data/videos/my_video.mp4
+
+    # Pass a custom video path as the CMD argument:
+    #   docker compose run backend python live_test.py /app/data/videos/custom.mp4
+    command: ["python", "live_test.py"]
+
+    # No display server is available in Docker; OpenCV runs headless.
+    # The annotated output video is written to /app/outputs/master_test_result.mp4
+
+
+  # ── Frontend: Streamlit Dashboard ────────────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: tvs-dashboard
+    restart: unless-stopped
+
+    ports:
+      - "8501:8501"          # Open http://localhost:8501 in your browser
+
+    volumes:
+      # Read from the same database and evidence images the backend writes
+      - db_data:/app/database
+      - evidence_data:/app/outputs
+
+    environment:
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+    # Dashboard can start before the backend writes anything;
+    # it will just show "No data yet" until records appear.
+    depends_on:
+      - backend
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+
+# ── Named volumes (persist across container restarts) ─────────────────
+volumes:
+  db_data:
+    driver: local
+  evidence_data:
+    driver: local

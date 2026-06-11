@@ -1,0 +1,67 @@
+# ─────────────────────────────────────────────────────────────────────
+#  Backend — Traffic Violation Detection Pipeline
+#  Runs: python live_test.py  (OpenCV + YOLOv8 + EasyOCR full pipeline)
+#
+#  Build:
+#    docker build -f Dockerfile.backend -t tvs-backend .
+#  Run standalone:
+#    docker run --rm \
+#      -v "$(pwd)/data:/app/data" \
+#      -v "$(pwd)/models:/app/models" \
+#      -v "$(pwd)/outputs:/app/outputs" \
+#      -v "$(pwd)/database:/app/database" \
+#      tvs-backend
+# ─────────────────────────────────────────────────────────────────────
+
+# Python 3.12 slim keeps the image lean while matching the dev environment
+FROM python:3.12-slim
+
+# ── system-level packages needed by OpenCV, EasyOCR, and PyTorch ─────
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgl1 \
+        libglib2.0-0 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
+        libgomp1 \
+        libgstreamer1.0-0 \
+        libgstreamer-plugins-base1.0-0 \
+        ffmpeg \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        wget \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ── copy requirements first so pip layer is cached on code-only changes
+COPY requirements.txt .
+
+# Install CPU-only PyTorch (saves ~2 GB vs the CUDA build)
+# Then install the rest of the dependencies
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir \
+        torch==2.3.1 torchvision==0.18.1 \
+        --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements.txt
+
+# ── copy project source (models, data, videos are mounted at runtime) ─
+COPY config/      ./config/
+COPY src/         ./src/
+COPY live_test.py main.py setup_lanes.py ./
+# Also copy the bundled yolov8n.pt backbone (vehicle detector fallback)
+COPY yolov8n.pt   ./
+
+# ── persistent directories – real content is provided via volumes ─────
+RUN mkdir -p database outputs/evidence outputs/violations models data/videos
+
+# ── environment tweaks ────────────────────────────────────────────────
+# Prevent OpenCV from trying to open a display window in headless Docker
+ENV QT_QPA_PLATFORM=offscreen
+# Keep Python output unbuffered so docker logs are real-time
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Default: process a test video (path can be overridden via CMD or entrypoint)
+CMD ["python", "live_test.py"]
