@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tvs-backend
+  namespace: traffic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tvs-backend
+  template:
+    metadata:
+      labels:
+        app: tvs-backend
+    spec:
+      nodeName: tvs-cluster-worker2  # force backend to worker2 remove it later 
+      containers:
+      - name: backend
+        image: hamzamalik1/traffic-backend:latest
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: HEADLESS
+          value: "1"
+        - name: LOOP_VIDEO
+          value: "1"
+        resources:
+          limits:
+            memory: "3Gi"
+            cpu: "3"
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+        volumeMounts:
+        - name: db-data
+          mountPath: /app/database
+        - name: evidence-data
+          mountPath: /app/outputs
+        - name: models
+          mountPath: /app/models
+        - name: data             # FIX: was missing
+          mountPath: /app/data  
+      volumes:
+      - name: db-data
+        persistentVolumeClaim:
+          claimName: db-pvc
+      - name: evidence-data
+        persistentVolumeClaim:
+          claimName: evidence-pvc
+      - name: models
+        hostPath:
+          path: /mnt/models
+      - name: data               # FIX: was missing
+        hostPath:
+          path: /mnt/data      # fix path
+
+
+          
