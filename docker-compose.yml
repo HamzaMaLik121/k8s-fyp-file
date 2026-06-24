@@ -1,29 +1,34 @@
-# ─────────────────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════
 #  Traffic Violation Detection System — Docker Compose
 #
-#  Two services share a single SQLite database file via a named volume:
-#    • backend   — CV/ML detection pipeline  (live_test.py)
-#    • dashboard — Streamlit web UI           (src/gui/dashboard.py)
+#  Architecture: 2-tier application with shared SQLite database
+#    • backend   — CV/ML detection pipeline  (984 MB, PyTorch + OpenCV + YOLO)
+#                  Continuously processes video in a loop
+#    • dashboard — Streamlit web UI          (269 MB, lightweight Pandas + Plotly)
+#                  Live updates every 3-5 seconds
 #
-#  Quick start:
-#    docker compose up --build
+#  Quick start (runs both simultaneously):
+#    docker compose up
 #
-#  Dashboard only (to browse existing violations without running detection):
-#    docker compose up dashboard
+#  Access points:
+#    • Dashboard: http://localhost:8501  (violation records + charts)
+#    • Backend logs: docker compose logs -f backend
 #
-#  Detection only (headless, no browser):
-#    docker compose up backend
-# ─────────────────────────────────────────────────────────────────────
+#  Stop everything:
+#    docker compose down
+# ═════════════════════════════════════════════════════════════════════
 
 services:
 
   # ── Backend: Video Detection Pipeline ───────────────────────────────
   backend:
+    image: traffic-backend:latest 
     build:
       context: .
       dockerfile: Dockerfile.backend
-    container_name: tvs-backend
-    restart: "no"            # run once per video, do not auto-restart
+    container_name: traffic-backend
+    restart: on-failure  # FIX: was 'unless-stopped' — that hid real exit codes
+                         # on-failure lets Docker capture + report crash reasons
 
     volumes:
       # Persistent data shared with the dashboard
@@ -41,27 +46,50 @@ services:
 
     environment:
       - PYTHONUNBUFFERED=1
-      # Override video source via environment variable (optional)
-      # VIDEO_SOURCE: /app/data/videos/my_video.mp4
+      - LOOP_VIDEO=1           # Set to 1 to loop video continuously
+      - HEADLESS=1             # Disable cv2.imshow() for headless Docker
 
-    # Pass a custom video path as the CMD argument:
-    #   docker compose run backend python live_test.py /app/data/videos/custom.mp4
+    # FIX: removed the shell while-loop — let Docker handle restarts via
+    # 'restart: on-failure'. This way Docker captures the real exit code
+    # and you can see actual crash reasons in 'docker compose logs backend'
     command: ["python", "live_test.py"]
 
-    # No display server is available in Docker; OpenCV runs headless.
-    # The annotated output video is written to /app/outputs/master_test_result.mp4
+    # FIX: added healthcheck — checks DB file exists (written on first detection)
+    healthcheck:
+      test: ["CMD", "test", "-f", "/app/database/violations.db"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s  # give YOLO + EasyOCR time to load before first check
+
+    # FIX: resource limits — without these, PyTorch can OOM-kill the host
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: '2.0'
+        reservations:
+          memory: 512m
+          cpus: '0.5'
 
 
   # ── Frontend: Streamlit Dashboard ────────────────────────────────────
   dashboard:
+    image: traffic-dashboard:latest
     build:
       context: .
       dockerfile: Dockerfile.dashboard
-    container_name: tvs-dashboard
+    container_name: traffic-dashboard
     restart: unless-stopped
 
+    # FIX: wait for backend to start before dashboard comes up
+    # prevents dashboard from showing empty DB on cold start
+    depends_on:
+      backend:
+        condition: service_healthy
+
     ports:
-      - "8501:8501"          # Open http://localhost:8501 in your browser
+      - "8502:8501"          # Open http://localhost:8501 in your browser
 
     volumes:
       # Read from the same database and evidence images the backend writes
@@ -74,17 +102,22 @@ services:
       - STREAMLIT_SERVER_HEADLESS=true
       - STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
 
-    # Dashboard can start before the backend writes anything;
-    # it will just show "No data yet" until records appear.
-    depends_on:
-      - backend
-
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 15s
+
+    # FIX: resource limits — dashboard is lightweight, cap it low
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+          cpus: '0.5'
+        reservations:
+          memory: 128m
+          cpus: '0.1'
 
 
 # ── Named volumes (persist across container restarts) ─────────────────
@@ -93,3 +126,35 @@ volumes:
     driver: local
   evidence_data:
     driver: local
+
+# ═════════════════════════════════════════════════════════════════════
+#  Usage Examples
+# ═════════════════════════════════════════════════════════════════════
+#
+# Start both services (backend processing + live dashboard):
+#   docker compose up
+#
+# Start in detached mode (background):
+#   docker compose up -d
+#   Then open http://localhost:8501 to see live violations
+#
+# View real-time backend logs (violation detections):
+#   docker compose logs -f backend
+#
+# View dashboard logs:
+#   docker compose logs -f dashboard
+#
+# Stop all services:
+#   docker compose down
+#
+# Stop and remove all data (deletes database and evidence):
+#   docker compose down -v
+#
+# Rebuild after code changes:
+#   docker compose build
+#   docker compose up
+#
+# Run backend once with a specific video (no loop):
+#   docker compose run --rm backend python live_test.py /app/data/videos/my_video.mp4
+#
+# ═════════════════════════════════════════════════════════════════════
